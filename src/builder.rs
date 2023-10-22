@@ -119,35 +119,32 @@ impl Builder {
             .push((a.read().await.id, b.read().await.id))
     }
 
-    pub async fn set_input(&mut self, input: Node, val: u64) {
+    pub async fn set_input(&mut self, input: Arc<RwLock<Node>>, val: u64) {
+        let input_inner: Node;
+        {
+            input_inner = input.read().await.to_owned();
+        }
         // make sure node is an input - can't use iterator's sync closure w/ tokio rwlock await here so just classic for loop it
         let mut contains = false;
         for stored in &self.inputs {
-            if stored.read().await.to_owned() == input {
+            if stored.read().await.to_owned() == input_inner {
                 contains = true;
             }
         }
-        if input.node_type != NodeType::Input || !contains {
-            panic!("Node {:#?} is not a valid input", input)
+        if input_inner.node_type != NodeType::Input || !contains {
+            panic!("Node {} is not a valid input", input_inner)
         }
         let mut lock = self.val_map.write().await;
-        lock.insert(input.id, val);
+        lock.insert(input_inner.id, val);
+        input.write().await.value = NodeValue::Static(Some(val));
     }
 
     pub async fn fill_nodes(&mut self) {
         // start the fill with the graph's inputs
         // every node in the computation graph is constructed downstream from (at least) one input node
-        /*  println!(
-            "Starting evaluation of graph from inputs: {:#?}",
-            self.inputs
-        );*/
         let mut task_handles = vec![];
         for input in self.inputs.clone() {
-            println!(
-                "Evaluating input: {:#?} with inputs len: {}",
-                self.val_map.read().await.get(&input.read().await.id),
-                self.inputs.len()
-            );
+            println!("Filling from input: {}", input.read().await.to_owned());
             let mut captured_self = self.clone();
             task_handles.push(tokio::spawn(async move {
                 captured_self
@@ -164,10 +161,13 @@ impl Builder {
                 // self is behind a (mut) shared ref - thus the clone/capture of these attributes into the tokio task closure
                 let captured_val_map = self.val_map.clone();
                 let captured_waiter_map = self.waiter_map.clone();
-                let captured_node = node.read().await.clone();
+                let captured_node: Node;
+                // scope guard for the node rlock
+                {
+                    captured_node = node.read().await.clone();
+                }
                 let mut captured_self = self.clone();
                 tokio::spawn(async move {
-                    // println!("Attempting to evaluate node: {:#?}", captured_node);
                     // take a read lock, and check first to see if this node has already been evaluated elsewhere
                     let val_rlock = captured_val_map.read().await;
                     if let Some(_) = val_rlock.get(&captured_node.id) {
@@ -189,12 +189,13 @@ impl Builder {
                                                 let mut rx = a_broadcaster.subscribe();
 
                                                 println!(
-                                                    "Waiting on parent {:#?} to evaluate node: {:#?}",
-                                                    a, captured_node);
+                                                    "Waiting on parent {} to evaluate node: {}",
+                                                    a, captured_node
+                                                );
                                                 rx.recv().await.unwrap()
                                             } else {
                                                 // this should never occur
-                                                panic!("broadcaster for node {:#?} not found", a)
+                                                panic!("broadcaster for node {} not found", a)
                                             }
                                         }
                                     };
@@ -207,36 +208,40 @@ impl Builder {
                                             {
                                                 let mut rx = b_broadcaster.subscribe();
                                                 println!(
-                                                    "Waiting on parent {:#?} to evaluate node: {:#?}",
-                                                    b, captured_node);
+                                                    "Waiting on parent {} to evaluate node: {}",
+                                                    b, captured_node
+                                                );
                                                 rx.recv().await.unwrap()
                                             } else {
                                                 // this should never occur
-                                                panic!("broadcaster for node {:#?} not found", b)
+                                                panic!("broadcaster for node {} not found", b)
                                             }
                                         }
                                     };
                                     drop(val_rlock);
-                                    print!(
-                                        "Recieved parent values {:#?} and {:#?} for node: {:#?}",
+                                    println!(
+                                        "Recieved parent values {} and {} for node: {}",
                                         a_val, b_val, captured_node
                                     );
                                     let node_val = a_val + b_val;
                                     // obtain a write lock for this node
-                                    print!(
-                                        "Evaluated add {} and storing value for node: {:#?}",
+                                    println!(
+                                        "Evaluated add {} and storing value for node: {}",
                                         node_val, captured_node
                                     );
                                     // obtain a write lock for this node
                                     let mut wlock = captured_val_map.write().await;
                                     wlock.insert(captured_node.id, node_val);
-                                     // send value update notif to any blocked evaluation paths
-                                     if let Some (val_broadcaster) = captured_waiter_map.get(&captured_node.id) {
+                                    // send value update notif to any blocked evaluation paths
+                                    if let Some(val_broadcaster) =
+                                        captured_waiter_map.get(&captured_node.id)
+                                    {
                                         match val_broadcaster.send(node_val) {
                                             Ok(_) => {}
                                             Err(_) => {}
                                         }
                                     }
+                                    node.write().await.value = NodeValue::Static(Some(node_val));
                                 }
                                 GateOp::Mul(a, b) => {
                                     let maybe_a_val = val_rlock.get(&a);
@@ -249,14 +254,14 @@ impl Builder {
                                             if let Some(a_broadcaster) = captured_waiter_map.get(&a)
                                             {
                                                 println!(
-                                                   "Waiting on parent {:#?} to evaluate node: {:#?}",
-                                                 a, captured_node
+                                                    "Waiting on parent {} to evaluate node: {}\n",
+                                                    a, captured_node
                                                 );
                                                 let mut rx = a_broadcaster.subscribe();
                                                 rx.recv().await.unwrap()
                                             } else {
                                                 // this should never occur
-                                                panic!("broadcaster for node {:#?} not found", a)
+                                                panic!("broadcaster for node {} not found", a)
                                             }
                                         }
                                     };
@@ -268,37 +273,40 @@ impl Builder {
                                             if let Some(b_broadcaster) = captured_waiter_map.get(&b)
                                             {
                                                 println!(
-                                                    "Waiting on parent {:#?} to evaluate node: {:#?}",
+                                                    "Waiting on parent {} to evaluate node: {}\n",
                                                     b, captured_node
                                                 );
                                                 let mut rx = b_broadcaster.subscribe();
                                                 rx.recv().await.unwrap()
                                             } else {
                                                 // this should never occur
-                                                panic!("broadcaster for node {:#?} not found", b)
+                                                panic!("broadcaster for node {} not found", b)
                                             }
                                         }
                                     };
                                     drop(val_rlock);
-                                    print!(
-                                        "Recieved parent values {:#?} and {:#?} for node: {:#?}",
+                                    println!(
+                                        "Recieved parent values {} and {} for node: {}",
                                         a_val, b_val, captured_node
                                     );
                                     let node_val = a_val * b_val;
-                                    print!(
-                                        "Evaluated mul {} and storing value for node: {:#?}",
+                                    println!(
+                                        "Evaluated mul {} and storing value for node: {}",
                                         node_val, captured_node
                                     );
                                     // obtain a write lock for this node
                                     let mut wlock = captured_val_map.write().await;
                                     wlock.insert(captured_node.id, node_val);
                                     // send value update notif to any blocked evaluation paths
-                                    if let Some (val_broadcaster) = captured_waiter_map.get(&captured_node.id) {
+                                    if let Some(val_broadcaster) =
+                                        captured_waiter_map.get(&captured_node.id)
+                                    {
                                         match val_broadcaster.send(node_val) {
                                             Ok(_) => {}
                                             Err(_) => {}
                                         }
                                     }
+                                    node.write().await.value = NodeValue::Static(Some(node_val));
                                 }
                             }
                         }
@@ -343,7 +351,7 @@ mod tests {
             .add(x_squared.clone(), Arc::from(RwLock::from(five)))
             .await;
         let res = builder.add(x_squared_plus_5, x.clone()).await;
-        builder.set_input(x.read().await.to_owned(), 5).await;
+        builder.set_input(x, 5).await;
         let expected = builder.constant(35).await;
         builder
             .assert_equal(res, Arc::from(RwLock::from(expected)))
@@ -360,7 +368,7 @@ mod tests {
         let x_squared = builder.mul(x.clone(), x.clone()).await;
         let x_squared_plus_x = builder.add(x_squared.clone(), x.clone()).await;
         let res = builder.mul(x_squared_plus_x, x.clone()).await;
-        builder.set_input(x.read().await.to_owned(), 10).await;
+        builder.set_input(x, 10).await;
         let expected = builder.constant(1100).await;
         builder
             .assert_equal(res, Arc::from(RwLock::from(expected)))
@@ -389,8 +397,8 @@ mod tests {
         let res = builder
             .mul(x_squared_plus_x_plus_five, y_squared_plus_y_plus_5)
             .await;
-        builder.set_input(x.read().await.to_owned(), 5).await;
-        builder.set_input(y.read().await.to_owned(), 6).await;
+        builder.set_input(x, 5).await;
+        builder.set_input(y, 6).await;
         let expected = builder.constant(1645).await;
         builder
             .assert_equal(res, Arc::from(RwLock::from(expected)))
@@ -421,8 +429,8 @@ mod tests {
         builder
             .assert_equal(x_squared_plus_x_plus_five, y_squared_plus_y_plus_5)
             .await;
-        builder.set_input(x.read().await.to_owned(), 5).await;
-        builder.set_input(y.read().await.to_owned(), 5).await;
+        builder.set_input(x, 5).await;
+        builder.set_input(y, 5).await;
         builder.fill_nodes().await;
         assert_eq!(builder.check_constraints().await, true);
     }
@@ -449,8 +457,8 @@ mod tests {
         builder
             .assert_equal(x_squared_plus_x_plus_five, y_squared_plus_y_plus_5)
             .await;
-        builder.set_input(x.read().await.to_owned(), 5).await;
-        builder.set_input(y.read().await.to_owned(), 6).await;
+        builder.set_input(x, 5).await;
+        builder.set_input(y, 6).await;
         builder.fill_nodes().await;
         assert_eq!(builder.check_constraints().await, false);
     }

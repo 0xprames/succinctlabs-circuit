@@ -1,3 +1,4 @@
+use std::fmt;
 use std::hash::Hash;
 use std::sync::Arc;
 use tokio::sync::RwLock;
@@ -14,11 +15,31 @@ pub enum GateOp {
     Add(Uuid, Uuid),
     Mul(Uuid, Uuid),
 }
+
+impl fmt::Display for GateOp {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match *self {
+            GateOp::Add(a, b) => write!(f, "{} + {}", a, b),
+            GateOp::Mul(a, b) => write!(f, "{} * {}", a, b),
+        }
+    }
+}
 #[derive(PartialEq, Eq, Hash, Clone, Debug)]
 pub enum NodeValue {
     Gate(GateOp),
-    // TODO: this attribute needs to be modified after the memoized val_map is updated, to reflect in our Display trait for better printing
     Static(Option<u64>),
+}
+
+impl fmt::Display for NodeValue {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            NodeValue::Gate(op) => write!(f, "{}", op),
+            NodeValue::Static(val) => match val {
+                Some(val) => write!(f, "{}", val),
+                None => write!(f, "unevaluated"),
+            },
+        }
+    }
 }
 #[derive(Clone, Debug)]
 pub struct Node {
@@ -39,6 +60,12 @@ impl PartialEq for Node {
 }
 
 impl Eq for Node {}
+
+impl fmt::Display for Node {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "({} constructed from:  {})", self.id, self.value)
+    }
+}
 
 impl Node {
     pub fn input() -> Self {
