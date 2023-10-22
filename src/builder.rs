@@ -344,7 +344,12 @@ mod tests {
             .await;
         let res = builder.add(x_squared_plus_5, x.clone()).await;
         builder.set_input(x.read().await.to_owned(), 5).await;
+        let expected = builder.constant(35).await;
+        builder
+            .assert_equal(res, Arc::from(RwLock::from(expected)))
+            .await;
         builder.fill_nodes().await;
+        assert_eq!(builder.check_constraints().await, true);
     }
 
     // f(x) = (x^2 + x) * x
@@ -356,7 +361,12 @@ mod tests {
         let x_squared_plus_x = builder.add(x_squared.clone(), x.clone()).await;
         let res = builder.mul(x_squared_plus_x, x.clone()).await;
         builder.set_input(x.read().await.to_owned(), 10).await;
+        let expected = builder.constant(1100).await;
+        builder
+            .assert_equal(res, Arc::from(RwLock::from(expected)))
+            .await;
         builder.fill_nodes().await;
+        assert_eq!(builder.check_constraints().await, true);
     }
 
     // f(x,y) = (x^2 + x + 5) * (y^2 + y + 5)
@@ -381,7 +391,12 @@ mod tests {
             .await;
         builder.set_input(x.read().await.to_owned(), 5).await;
         builder.set_input(y.read().await.to_owned(), 6).await;
+        let expected = builder.constant(1645).await;
+        builder
+            .assert_equal(res, Arc::from(RwLock::from(expected)))
+            .await;
         builder.fill_nodes().await;
+        assert_eq!(builder.check_constraints().await, true);
     }
 
     // f(x) = (x^2 + x + 5)
