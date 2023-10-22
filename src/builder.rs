@@ -227,8 +227,16 @@ impl Builder {
                                         "Evaluated add {} and storing value for node: {:#?}",
                                         node_val, captured_node
                                     );
+                                    // obtain a write lock for this node
                                     let mut wlock = captured_val_map.write().await;
                                     wlock.insert(captured_node.id, node_val);
+                                     // send value update notif to any blocked evaluation paths
+                                     if let Some (val_broadcaster) = captured_waiter_map.get(&captured_node.id) {
+                                        match val_broadcaster.send(node_val) {
+                                            Ok(_) => {}
+                                            Err(_) => {}
+                                        }
+                                    }
                                 }
                                 GateOp::Mul(a, b) => {
                                     let maybe_a_val = val_rlock.get(&a);
@@ -284,6 +292,13 @@ impl Builder {
                                     // obtain a write lock for this node
                                     let mut wlock = captured_val_map.write().await;
                                     wlock.insert(captured_node.id, node_val);
+                                    // send value update notif to any blocked evaluation paths
+                                    if let Some (val_broadcaster) = captured_waiter_map.get(&captured_node.id) {
+                                        match val_broadcaster.send(node_val) {
+                                            Ok(_) => {}
+                                            Err(_) => {}
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -307,7 +322,7 @@ impl Builder {
         let rlock = self.val_map.read().await;
         let mut ret = false;
         for (node_a, node_b) in &self.constraints {
-            ret = (rlock.get(node_a) == rlock.get(node_b))
+            ret = rlock.get(node_a) == rlock.get(node_b)
         }
         ret
     }
